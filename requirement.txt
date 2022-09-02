@@ -1,0 +1,8 @@
+torch
+transformers
+datasets
+numpy
+pandas
+pathlib
+seqeval
+sklearn
