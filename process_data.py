@@ -14,15 +14,9 @@ from typing import List
 from collections import defaultdict
 from sklearn import metrics
 
-# ckpt = 'bert-base-cased'
-# tokenizer = AutoTokenizer.from_pretrained(ckpt, add_prefix_space=True)
 global ckpt
 global tokenizer
 global device
-global tag2id
-# device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-# tag2id = {'O': 0, 'B-MISC': 1, 'I-MISC': 2, 'B-PER': 3, 'I-PER': 4, 'B-ORG': 5, 'I-ORG': 6, 'B-LOC': 7, 'I-LOC': 8}
-
 
 
 def read_data(DataPath, task):
@@ -121,9 +115,8 @@ def collate_fn(input_pad_id, output_pad_token, output_pad_id, device):
     return collate_fn_wrapper
 
 
-def tokenize_aug(examples):
+def tokenize_and_align_labels(examples, tokenizer, tag2id):
     tokenized_inputs = tokenizer(examples["tokens"], truncation=True, is_split_into_words=True)
-
     labels = []
     examples["tag_ids"] = [[tag2id[tag] for tag in tags] for tags in examples["tags"]]
     for i, label in enumerate(examples["tag_ids"]):
@@ -150,8 +143,10 @@ def tokenize_aug(examples):
     return tokenized_inputs
 
 
+
+
 def comp(ori_model, sampled_trainset, reasonable_aug_examples, batch_size, 
-        input_pad_id, output_pad_id, output_pad_token, aug_num=None):
+        input_pad_id, output_pad_id, output_pad_token):
     
     ori_loader = DataLoader(sampled_trainset, batch_size=batch_size, shuffle=False, 
                                     collate_fn=collate_fn(input_pad_id, output_pad_token, output_pad_id, device))
@@ -159,15 +154,16 @@ def comp(ori_model, sampled_trainset, reasonable_aug_examples, batch_size,
                                     collate_fn=collate_fn(input_pad_id, output_pad_token, output_pad_id, device))
     ori_hidden = []
     gen_hidden = []
-    for batch in ori_loader:
-        input_ids, bathch_labels, masks = batch
-        outputs = ori_model(input_ids=input_ids, attention_mask=masks, output_hidden_states=True)
-        ori_hidden.extend(outputs.hidden_states[0].detach().cpu().tolist())
+    with torch.no_grad():
+        for batch in ori_loader:
+            input_ids, bathch_labels, masks = batch
+            outputs = ori_model(input_ids=input_ids, attention_mask=masks, output_hidden_states=True)
+            ori_hidden.extend(outputs.hidden_states[0].detach().cpu().tolist())
 
-    for batch in gen_loader:
-        input_ids, bathch_labels, masks = batch
-        outputs = ori_model(input_ids=input_ids, attention_mask=masks, output_hidden_states=True)
-        gen_hidden.extend(outputs.hidden_states[0].detach().cpu().tolist())
+        for batch in gen_loader:
+            input_ids, bathch_labels, masks = batch
+            outputs = ori_model(input_ids=input_ids, attention_mask=masks, output_hidden_states=True)
+            gen_hidden.extend(outputs.hidden_states[0].detach().cpu().tolist())
 
 
     ori_gen_pair = []
@@ -191,7 +187,7 @@ def comp(ori_model, sampled_trainset, reasonable_aug_examples, batch_size,
     return order
 
 
-def create_counterfactual_examples(trainset, pad_tag, aug_num=50):
+def create_counterfactual_examples(trainset, pad_tag):
     deduplicated_examples = set()
     counterfactual_examples = []
     local_entity_sets = {}
@@ -233,15 +229,14 @@ def create_counterfactual_examples(trainset, pad_tag, aug_num=50):
                 )
             ]
             counterfactual_examples.append(cfexample)
-            # if j % aug_num == 0:
-            #     print(j)
+
     return counterfactual_examples, deduplicated_examples
 
 
-def create_semifactual_examples(trainset, pad_tag, aug_num=50):
+def create_semifactual_examples(trainset, pad_tag):
     deduplicated_examples = set()
     counterfactual_examples = []
-    # filler = SubstituteWithBert()
+
     filler = pipeline('fill-mask', model=ckpt, tokenizer=ckpt, device=0)
     for i, example in enumerate(trainset):
 
@@ -254,7 +249,7 @@ def create_semifactual_examples(trainset, pad_tag, aug_num=50):
             cfexample["obersavational_text"] = example["tokens"]
             # mask-and-fill
             # cfexample["input_ids"][index+1] = 103 # [MASK] ~ 103, first place of input_ids is [CLS]
-            cfexample["tokens"][index] = '[MASK]'
+            cfexample["tokens"][index] = tokenizer.mask_token # '[MASK]'
             fill_result = filler(' '.join(cfexample["tokens"]), top_k=1)
             candidate = fill_result[0]['token_str']
             cfexample["tokens"][index] = candidate
@@ -269,8 +264,7 @@ def create_semifactual_examples(trainset, pad_tag, aug_num=50):
                 )
             ]
             counterfactual_examples.append(cfexample)
-            # if j % aug_num == 0:
-            #     print(j)
+
     return counterfactual_examples, deduplicated_examples
 
 
@@ -279,21 +273,22 @@ def create_semifactual_examples(trainset, pad_tag, aug_num=50):
 def check_data(model, all_aug_examples, aug_dataloader, id2tag, batch_size):
     reasonable_aug_examples, unreasonable_aug_examples = [], []
     # check if reasonable
-    for i, batch in enumerate(aug_dataloader):
-        input_ids, labels, masks = batch # 32 sents
-        outputs = model(input_ids=input_ids, attention_mask=masks)
-        logits = outputs.logits
-        probs = torch.nn.functional.softmax(logits, -1)
-        preds = probs.argmax(-1).detach().cpu().tolist()
-        for j, pred in enumerate(preds): # 32 sents, pred ~ 1 sent
-            tokens = all_aug_examples[i*batch_size + j]["tokens"]
-            tags = all_aug_examples[i*batch_size + j]["tags"]
-            replaced_spans = all_aug_examples[i*batch_size + j]["replaced"]
-            predicted_spans = ["[{0}]({1}, {2})".format(token, index, id2tag[pred_id].split('-')[1] if id2tag[pred_id] != 'O' else 'O') 
-                                for index, (token, pred_id) in enumerate(zip(tokens, pred))]
-            if len(set(replaced_spans).intersection(set(predicted_spans))) == len(replaced_spans):
-                reasonable_aug_examples.append(all_aug_examples[i*batch_size + j])
-                # print('add')
+    with torch.no_grad():
+        for i, batch in enumerate(aug_dataloader):
+            input_ids, labels, masks = batch # 32 sents
+            outputs = model(input_ids=input_ids, attention_mask=masks)
+            logits = outputs.logits
+            probs = torch.nn.functional.softmax(logits, -1)
+            preds = probs.argmax(-1).detach().cpu().tolist()
+            for j, pred in enumerate(preds): # 32 sents, pred ~ 1 sent
+                tokens = all_aug_examples[i*batch_size + j]["tokens"]
+                tags = all_aug_examples[i*batch_size + j]["tags"]
+                replaced_spans = all_aug_examples[i*batch_size + j]["replaced"]
+                predicted_spans = ["[{0}]({1}, {2})".format(token, index, id2tag[pred_id].split('-')[1] if id2tag[pred_id] != 'O' else 'O') 
+                                    for index, (token, pred_id) in enumerate(zip(tokens, pred))]
+                if len(set(replaced_spans).intersection(set(predicted_spans))) == len(replaced_spans):
+                    reasonable_aug_examples.append(all_aug_examples[i*batch_size + j])
+
     reasonable_aug_examples = pd.DataFrame(reasonable_aug_examples)
     reasonable_aug_examples = datasets.Dataset.from_pandas(reasonable_aug_examples)
     
@@ -301,7 +296,7 @@ def check_data(model, all_aug_examples, aug_dataloader, id2tag, batch_size):
 
 
 def augment(ori_model, sampled_trainset, myckpt, mytokenizer,
-            input_pad_id, output_pad_id, output_pad_token, mytag2id, id2tag, 
+            input_pad_id, output_pad_id, output_pad_token, tag2id, id2tag, 
             batch_size, aug_example_path, aug_ratio, mydevice, is_semi=False):
     
     global ckpt
@@ -310,47 +305,43 @@ def augment(ori_model, sampled_trainset, myckpt, mytokenizer,
     tokenizer = mytokenizer
     global device
     device = mydevice
-    global tag2id
-    tag2id = mytag2id
     
-    if os.path.exists(aug_example_path):
-        print('loading reasonable cfexamples')
-        selected_aug_examples = load_from_disk(aug_example_path)
+    if aug_ratio == 0:
+        return [], 0
+    if is_semi:
+        all_aug_examples, deduplicated_examples = create_semifactual_examples(sampled_trainset, output_pad_token)
     else:
-        if aug_ratio == 0:
-            return []
-        if is_semi:
-            all_aug_examples, deduplicated_examples = create_semifactual_examples(sampled_trainset, output_pad_token)
-        else:
-            all_aug_examples, deduplicated_examples = create_counterfactual_examples(sampled_trainset, output_pad_token)
-        all_aug_examples = pd.DataFrame(all_aug_examples)
-        all_aug_examples = datasets.Dataset.from_pandas(all_aug_examples)
-        all_aug_examples = all_aug_examples.map(tokenize_aug, batched=True)
-        # to check if the generated cf examples are linguistically reasonable
-        aug_dataloader = DataLoader(all_aug_examples, batch_size, shuffle=True, collate_fn=collate_fn(input_pad_id, output_pad_token, output_pad_id, device))
-        reasonable_aug_examples, unreasonable_aug_examples = check_data(ori_model, all_aug_examples, aug_dataloader, id2tag, batch_size)
-        print(f'{len(sampled_trainset)=}')
-        print(f'{len(all_aug_examples)=}')
-        print(f'{len(reasonable_aug_examples)=}')
-        print('maximum ratio:', int(len(reasonable_aug_examples) / len(sampled_trainset)))
-        # return reasonable_aug_examples
-        maximum = int(len(reasonable_aug_examples) / len(sampled_trainset))
-        # sampling the augmented examples using MMI
-        sorting_index = comp(ori_model, sampled_trainset, reasonable_aug_examples, batch_size, input_pad_id, output_pad_id, output_pad_token)
-        
-        for aug_ratio in range(1, maximum+1):
-            aug_num = aug_ratio * len(sampled_trainset)
-            aug_num = int(aug_num) if aug_num < len(reasonable_aug_examples) else len(reasonable_aug_examples)
-            print('ori samples:', len(sampled_trainset), 'aug samples:', aug_num)
-            path = aug_example_path.replace('aug_ratio', str(aug_ratio))
-            sampling_index = sorting_index[-aug_num:]
-            selected_aug_examples = reasonable_aug_examples.select(sampling_index)    
-            remove_columns = set(selected_aug_examples.features) ^ set(sampled_trainset.features)
-            selected_aug_examples = selected_aug_examples.remove_columns(remove_columns)
-            selected_aug_examples.save_to_disk(path)
+        all_aug_examples, deduplicated_examples = create_counterfactual_examples(sampled_trainset, output_pad_token)
+    fn_kwargs = {"tokenizer":tokenizer, "tag2id":tag2id}
+    sampled_trainset = sampled_trainset.map(tokenize_and_align_labels, fn_kwargs=fn_kwargs, batched=True)
+    all_aug_examples = pd.DataFrame(all_aug_examples)
+    all_aug_examples = datasets.Dataset.from_pandas(all_aug_examples)
+    all_aug_examples = all_aug_examples.map(tokenize_and_align_labels, fn_kwargs=fn_kwargs, batched=True)
+    # to check if the generated cf examples are linguistically reasonable
+    aug_dataloader = DataLoader(all_aug_examples, batch_size, shuffle=True, collate_fn=collate_fn(input_pad_id, output_pad_token, output_pad_id, device))
+    reasonable_aug_examples, unreasonable_aug_examples = check_data(ori_model, all_aug_examples, aug_dataloader, id2tag, batch_size)
+    print(f'{len(sampled_trainset)=}')
+    print(f'{len(all_aug_examples)=}')
+    print(f'{len(reasonable_aug_examples)=}')
+    print('maximum ratio:', int(len(reasonable_aug_examples) / len(sampled_trainset)))
+    # return reasonable_aug_examples
+    maximum = int(len(reasonable_aug_examples) / len(sampled_trainset))
+    # sampling the augmented examples using MMI
+    sorting_index = comp(ori_model, sampled_trainset, reasonable_aug_examples, batch_size, input_pad_id, output_pad_id, output_pad_token)
+    
+    for aug_ratio in range(1, maximum+1):
+        aug_num = aug_ratio * len(sampled_trainset)
+        aug_num = int(aug_num) if aug_num < len(reasonable_aug_examples) else len(reasonable_aug_examples)
+        print('ori samples:', len(sampled_trainset), 'aug samples:', aug_num)
+        path = aug_example_path.replace('aug_ratio', str(aug_ratio))
+        sampling_index = sorting_index[-aug_num:]
+        selected_aug_examples = reasonable_aug_examples.select(sampling_index)    
+        remove_columns = set(selected_aug_examples.features) ^ set(sampled_trainset.features)
+        selected_aug_examples = selected_aug_examples.remove_columns(remove_columns)
+        selected_aug_examples.save_to_disk(path)
     
     aug_num = aug_ratio * len(sampled_trainset)
-    sampling_index = sorting_index[-aug_num:]
+    sampling_index = sorting_index[-aug_num:] # last aug_num samples
     selected_aug_examples = reasonable_aug_examples.select(sampling_index)    
     
-    return selected_aug_examples, maximum
+    return maximum
