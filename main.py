@@ -42,11 +42,11 @@ def train(save_path, trainset, devset, data_collator, tokenizer, compute_metrics
     if load and os.path.exists(save_path):
         print('Loading from', save_path)
         model = AutoModelForTokenClassification.from_pretrained(save_path)
-        load=True
+        flag=True
     else:
         print('Traininig and saving to', save_path)
         model = AutoModelForTokenClassification.from_pretrained(ckpt, num_labels=len(label_list))
-        load=False
+        flag=False
 
     args = TrainingArguments(
         'model_cache',
@@ -70,7 +70,7 @@ def train(save_path, trainset, devset, data_collator, tokenizer, compute_metrics
         compute_metrics=compute_metrics
     )
 
-    if not load:
+    if not flag:
         trainer.train()
         trainer.evaluate()
         os.makedirs(save_path, exist_ok=True)
