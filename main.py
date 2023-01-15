@@ -39,7 +39,7 @@ def compute_metrics(p):
 
 
 def train(save_path, trainset, devset, data_collator, tokenizer, compute_metrics):
-    if os.path.exists(save_path):
+    if load and os.path.exists(save_path):
         print('Loading from', save_path)
         model = AutoModelForTokenClassification.from_pretrained(save_path)
         load=True
@@ -113,6 +113,7 @@ if __name__ == '__main__':
     parser.add_argument('--cf_aug_ratio', type=int, default=-1) # set to -1 to search the best ratio
     parser.add_argument('--semi_aug_ratio', type=int, default=-1) # set to -1 to search the best ratio
     parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--load', type=bool, default=False) # whether to load model and augmented samples from cache
     args = parser.parse_args()
 
     
@@ -129,6 +130,8 @@ if __name__ == '__main__':
     output_pad_token = args.output_pad_token
     label_list = args.label_list
     batch_size = args.batch_size
+    load = args.load
+
     task_samples = task + '_' + str(num_samples)
     DataPath = os.path.join(args.data_folder, task)
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu") 
@@ -169,7 +172,7 @@ if __name__ == '__main__':
 
                 # Sampling from the training dataset
                 sampled_path = os.path.join('sampled_trainset', task_samples, str(seed))
-                if os.path.exists(sampled_path):
+                if load and os.path.exists(sampled_path):
                     sampled_trainset = load_from_disk(sampled_path)
                 else:
                     sampled_trainset = sampling(trainset, label_list, tag2id, num_samples) 
@@ -199,7 +202,7 @@ if __name__ == '__main__':
                     # Train the improved model with semi augmentation
                     semiexample_path = os.path.join('semi_examples', task_samples, ckpt, 'aug_ratio', str(seed))
                     semi_save_path = f'semi_model/{ckpt}-{num_samples}-semi_{semi_aug_ratio}/{seed}'
-                    if os.path.exists(semiexample_path.replace('aug_ratio', str(semi_aug_ratio))):
+                    if load and os.path.exists(semiexample_path.replace('aug_ratio', str(semi_aug_ratio))):
                         print('Loading semi examples')
                     else:
                         print('Semi augmentation')
@@ -233,7 +236,7 @@ if __name__ == '__main__':
                     # train the improved model with cf augmentation
                     cfexample_path = os.path.join('cf_examples', task_samples, ckpt, 'aug_ratio', str(seed))
                     cf_save_path = f'cf_model/{ckpt}-{num_samples}-cf_{cf_aug_ratio}/{seed}'
-                    if os.path.exists(cfexample_path.replace('aug_ratio', str(cf_aug_ratio))):
+                    if load and os.path.exists(cfexample_path.replace('aug_ratio', str(cf_aug_ratio))):
                         print('loading cf examples')
                     else:
                         print('cf augmentation')
