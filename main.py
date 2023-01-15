@@ -112,7 +112,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_samples', type=int, default=100)
     parser.add_argument('--cf_aug_ratio', type=int, default=-1) # set to -1 to search the best ratio
     parser.add_argument('--semi_aug_ratio', type=int, default=-1) # set to -1 to search the best ratio
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=4)
     args = parser.parse_args()
 
     
@@ -182,7 +182,7 @@ if __name__ == '__main__':
 
                 # Process data for the original model
                 ori_dataset = sampled_trainset
-                ori_train_data = ori_train_data.map(tokenize_and_align_labels, fn_kwargs=fn_kwargs, batched=True)
+                ori_train_data = ori_dataset.map(tokenize_and_align_labels, fn_kwargs=fn_kwargs, batched=True)
                 
                 # Train the original model under the few-shot setting
                 print('\n'*2, 'Training ori model', '\n'*3)
@@ -290,9 +290,9 @@ if __name__ == '__main__':
                                                                 'mix_precision', 'mix_recall', 'mix_f1', 'mix_acc'
                                                                     ])
                     
-                    os.makedirs(f'results/{ckpt}/semi_{semi_aug_ratio}/cf_{cf_aug_ratio}', exist_ok=True)
+                    os.makedirs(f'results/{ckpt}-{num_samples}/semi_{semi_aug_ratio}/cf_{cf_aug_ratio}', exist_ok=True)
 
-                    if eval_task == "conll2003":
+                    if eval_task == task:
                         ori_devset_results = eval(ori_trainer, devset)
                         semi_devset_results = eval(semi_trainer, devset)
                         cf_devset_results = eval(cf_trainer, devset)
@@ -306,8 +306,7 @@ if __name__ == '__main__':
                                                 mix_devset_results['overall_precision'], mix_devset_results['overall_recall'], 
                                                 mix_devset_results['overall_f1'], mix_devset_results['overall_accuracy']
                                                 ]
-                        devset_results.loc[seeds, :] = devset_results.mean()
-                        devset_results.to_csv(f'results/{ckpt}/semi_{semi_aug_ratio}/cf_{cf_aug_ratio}/{eval_task}_dev.csv')
+                        
 
 
                     ori_testset_results = eval(ori_trainer, testset)
@@ -323,6 +322,10 @@ if __name__ == '__main__':
                                             mix_testset_results['overall_precision'], mix_testset_results['overall_recall'], 
                                             mix_testset_results['overall_f1'], mix_testset_results['overall_accuracy']
                                             ]
-                    
-                    testset_results.loc[seeds, :] = testset_results.mean()                   
-                    testset_results.to_csv(f'results/{ckpt}/semi_{semi_aug_ratio}/cf_{cf_aug_ratio}/{eval_task}_test.csv') 
+
+                del ori_model, ori_trainer, semi_trainer, cf_trainer, mix_trainer
+
+            devset_results.loc[seeds, :] = devset_results.mean()
+            devset_results.to_csv(f'results/{ckpt}-{num_samples}/semi_{semi_aug_ratio}/cf_{cf_aug_ratio}/{eval_task}_dev.csv')
+            testset_results.loc[seeds, :] = testset_results.mean()
+            testset_results.to_csv(f'results/{ckpt}-{num_samples}/semi_{semi_aug_ratio}/cf_{cf_aug_ratio}/{eval_task}_test.csv')

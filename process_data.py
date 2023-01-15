@@ -10,6 +10,7 @@ import pandas as pd
 import datasets
 import copy
 import random
+from tqdm import tqdm
 from typing import List
 from collections import defaultdict
 from sklearn import metrics
@@ -155,29 +156,23 @@ def comp(ori_model, sampled_trainset, reasonable_aug_examples, batch_size,
     ori_hidden = []
     gen_hidden = []
     with torch.no_grad():
-        for batch in ori_loader:
+        for batch in tqdm(ori_loader, total=len(ori_loader), desc="Computing Embeddings of Original Data"):
             input_ids, bathch_labels, masks = batch
             outputs = ori_model(input_ids=input_ids, attention_mask=masks, output_hidden_states=True)
             ori_hidden.extend(outputs.hidden_states[0].detach().cpu().tolist())
 
-        for batch in gen_loader:
+        for batch in tqdm(gen_loader, total=len(gen_loader), desc="Computing Embeddings of Augmented Data"):
             input_ids, bathch_labels, masks = batch
             outputs = ori_model(input_ids=input_ids, attention_mask=masks, output_hidden_states=True)
             gen_hidden.extend(outputs.hidden_states[0].detach().cpu().tolist())
 
 
-    ori_gen_pair = []
-    last_ori_sent = None
-    for i, example in enumerate(reasonable_aug_examples):
+    gen_rank = []
+    for i, example in tqdm(enumerate(reasonable_aug_examples), total=len(reasonable_aug_examples), desc="Computing NMI"):
         ori_index = example['ori_index']
         ori_h = np.array(ori_hidden[ori_index])
         gen_h = np.array(gen_hidden[i])
-        ori_gen_pair.append((ori_h, gen_h))
-
-    gen_rank = []
-    for (ori, gen) in ori_gen_pair:
-        ori, gen = np.array(ori), np.array(gen)
-        NMI = metrics.normalized_mutual_info_score(ori.reshape((-1,)), gen.reshape((-1,)))
+        NMI = metrics.normalized_mutual_info_score(ori_h.reshape((-1,)), gen_h.reshape((-1,)))
         gen_rank.append(NMI)
     # get the sorted index of the element in the original array
     # the index of smaller NMI scores will be presented first
@@ -204,7 +199,8 @@ def create_counterfactual_examples(trainset, pad_tag):
     for key in local_entity_sets.keys():
             local_entity_sets[key] = list(set(local_entity_sets[key]))
     local_entity_sets[pad_tag] = []
-    for i, example in enumerate(trainset):
+    
+    for i, example in tqdm(enumerate(trainset), total=len(trainset), desc="Creating Counterfactual Examples"):
         local_entity_subsets = []
         count = 0
         while len(local_entity_subsets) < 1 and count < len(example['tokens']):
@@ -238,7 +234,8 @@ def create_semifactual_examples(trainset, pad_tag):
     counterfactual_examples = []
 
     filler = pipeline('fill-mask', model=ckpt, tokenizer=ckpt, device=0)
-    for i, example in enumerate(trainset):
+
+    for i, example in tqdm(enumerate(trainset), total=len(trainset), desc="Creating Semifactual Examples"):
 
         for index in range(len(example['tokens'])):
             if example['tags'][index] != pad_tag: # we only substitute the Non-O token
@@ -274,7 +271,7 @@ def check_data(model, all_aug_examples, aug_dataloader, id2tag, batch_size):
     reasonable_aug_examples, unreasonable_aug_examples = [], []
     # check if reasonable
     with torch.no_grad():
-        for i, batch in enumerate(aug_dataloader):
+        for i, batch in tqdm(enumerate(aug_dataloader), total=len(aug_dataloader), desc="Checking Data"):
             input_ids, labels, masks = batch # 32 sents
             outputs = model(input_ids=input_ids, attention_mask=masks)
             logits = outputs.logits
